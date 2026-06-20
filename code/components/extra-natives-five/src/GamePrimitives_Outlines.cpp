@@ -29,6 +29,15 @@ struct CEntityDrawHandler
 
 static rage::grcRenderTarget *maskRenderTarget, *tempRenderTarget;
 
+// Temporary secondary-camera render target test.
+// This does NOT render the world yet.
+// It only proves that we can create, bind, clear, and unbind a private render target.
+static rage::grcRenderTarget* g_secondaryCameraTestRenderTarget = nullptr;
+static constexpr bool g_enableSecondaryCameraRenderTargetTest = true;
+static bool g_secondaryCameraTestLoggedCreate = false;
+static bool g_secondaryCameraTestLoggedDraw = false;
+static bool g_secondaryCameraTestLoggedExecute = false;
+
 // for entity prototypes
 static int* currentShader;
 static int* g_currentDrawBucket;
@@ -74,6 +83,19 @@ protected:
 
 		rage::grcEnd();
 	}
+	inline void DrawQuadRect(float left, float bottom, float right, float top)
+	{
+		rage::grcBegin(4, 4);
+
+		uint32_t color = 0xffffffff;
+
+		rage::grcVertex(left, bottom, 0.0f, 0.0f, 0.0f, -1.0f, color, 0.0f, 1.0f);
+		rage::grcVertex(right, bottom, 0.0f, 0.0f, 0.0f, -1.0f, color, 1.0f, 1.0f);
+		rage::grcVertex(left, top, 0.0f, 0.0f, 0.0f, -1.0f, color, 0.0f, 0.0f);
+		rage::grcVertex(right, top, 0.0f, 0.0f, 0.0f, -1.0f, color, 1.0f, 0.0f);
+
+		rage::grcEnd();
+	}
 
 	inline void DrawQuadUsingTechnique(int technique)
 	{
@@ -81,6 +103,17 @@ protected:
 		shader->PushPass(0);
 
 		DrawQuad();
+
+		shader->PopPass();
+		shader->PopTechnique();
+	}
+
+	inline void DrawQuadRectUsingTechnique(int technique, float left, float bottom, float right, float top)
+	{
+		shader->PushTechnique(technique, true, 0);
+		shader->PushPass(0);
+
+		DrawQuadRect(left, bottom, right, top);
 
 		shader->PopPass();
 		shader->PopTechnique();
@@ -352,6 +385,59 @@ private:
 	int v;
 };
 
+class SecondaryCameraTestRenderer : public OutlineRenderer
+{
+protected:
+	virtual const char* GetShaderName() override
+	{
+		return "outlinez_mask";
+	}
+
+public:
+	virtual void Setup() override
+	{
+		screenSize = shader->GetParameter("ScreenSize");
+		color = shader->GetParameter("Color");
+
+		maskTex = shader->GetParameter("MaskTexSampler");
+
+		v = shader->GetTechnique("v");
+	}
+
+	virtual void DrawScreenSpace() override
+	{
+		SetScreenSize(screenSize);
+
+		// Draw the test render target as a green-tinted box.
+		float colorF[4] = {
+			0.0f,
+			1.0f,
+			0.0f,
+			1.0f
+		};
+
+		SetColor(color, colorF);
+
+		shader->SetSampler(maskTex, g_secondaryCameraTestRenderTarget);
+
+		StoreState();
+
+		// Bottom-right-ish rectangle.
+		DrawQuadRectUsingTechnique(v, 0.55f, -0.95f, 0.95f, -0.55f);
+
+		RestoreState();
+	}
+
+private:
+	int screenSize, color;
+
+	int maskTex;
+
+	int v;
+};
+
+static SecondaryCameraTestRenderer g_secondaryCameraTestRenderer;
+
 static int g_renderer = 0;
 static std::vector<OutlineRenderer*> g_renderers = {
 	new GaussOutlineRenderer(),
@@ -387,6 +473,25 @@ static InitFunction initFunctionBuffers([]()
 	{
 		maskRenderTarget = CreateRenderTarget(0, "outlineMaskRT", 3, w, h, 32, nullptr, true, maskRenderTarget);
 		tempRenderTarget = CreateRenderTarget(0, "outlineTempRT", 3, w, h, 32, nullptr, true, tempRenderTarget);
+
+		if (g_enableSecondaryCameraRenderTargetTest)
+		{
+			g_secondaryCameraTestRenderTarget = CreateRenderTarget(
+			0,
+			"secondaryCameraTestRT",
+			3,
+			512,
+			512,
+			32,
+			nullptr,
+			true,
+			g_secondaryCameraTestRenderTarget);
+			if (!g_secondaryCameraTestLoggedCreate)
+			{
+				trace("[SecondaryCameraTest] Render target created: %p\n", static_cast<void*>(g_secondaryCameraTestRenderTarget));
+				g_secondaryCameraTestLoggedCreate = true;
+			}
+		}
 	});
 
 	OnDrawSceneEnd.Connect([]()
@@ -395,6 +500,49 @@ static InitFunction initFunctionBuffers([]()
 		static int lastZ;
 		static int lastBlend;
 		uintptr_t a = 0, b = 0;
+
+	if (g_enableSecondaryCameraRenderTargetTest && g_secondaryCameraTestRenderTarget)
+		{
+	if (!g_secondaryCameraTestRenderer.Initialized())
+	{
+		g_secondaryCameraTestRenderer.Init();
+	}
+
+	if (g_secondaryCameraTestRenderer.Initialized())
+	{
+		if (!g_secondaryCameraTestLoggedDraw)
+		{
+			trace("[SecondaryCameraTest] Renderer initialized, draw command queued\n");
+			g_secondaryCameraTestLoggedDraw = true;
+		}
+
+		EnqueueGenericDrawCommand([](uintptr_t, uintptr_t)
+		{
+			if (!g_secondaryCameraTestLoggedExecute)
+			{
+				trace("[SecondaryCameraTest] Draw command executing\n");
+				g_secondaryCameraTestLoggedExecute = true;
+			}
+
+			rage::grcTextureFactory::getInstance()->PushRenderTarget(
+					nullptr,
+					g_secondaryCameraTestRenderTarget,
+					nullptr,
+					0,
+					true,
+					0);
+
+					// Clear the private render target to white.
+					// The display shader will tint it green.
+					ClearRenderTarget(true, 0, false, 0.0f, false, 0);
+
+					rage::grcTextureFactory::getInstance()->PopRenderTarget(nullptr, nullptr);
+
+					g_secondaryCameraTestRenderer.DrawScreenSpace();
+				},
+				&a, &b);
+			}
+		}
 
 		if (outlineEntities.empty())
 		{
